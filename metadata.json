@@ -1,0 +1,8 @@
+{
+  "name": "3D Gesture Earth",
+  "description": "3D 手势控制地球交互相册 MVP",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": []
+}

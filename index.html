@@ -1,0 +1,866 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 手势控制地球交互相册</title>
+    <style>
+        /* CSS reset & full screen */
+        body, html { 
+            margin: 0; padding: 0; width: 100%; height: 100%; 
+            overflow: hidden; background-color: #000; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
+            user-select: none;
+        }
+        
+        /* Three.js Canvas Container */
+        #canvas-container { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; 
+        }
+        
+        /* Glassmorphism Base Class */
+        .glass {
+            background: rgba(15, 15, 15, 0.5);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #fff;
+            position: absolute;
+            z-index: 10;
+            box-sizing: border-box;
+            transition: opacity 0.3s ease, transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        /* Loading Screen */
+        #loading {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 999;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background: #000; transition: opacity 0.8s ease; color: #fff; 
+            font-size: 18px; letter-spacing: 2px;
+        }
+
+        /* Top-Left: Version Badge */
+        #version-badge {
+            top: 20px; left: 20px; padding: 8px 12px; border-radius: 6px; font-size: 14px;
+            color: #00ffcc; cursor: default;
+        }
+        #version-badge:hover { box-shadow: 0 0 10px rgba(0, 255, 204, 0.6); }
+
+        /* Top-Left: Back Button */
+        #back-btn {
+            top: 70px; left: 20px; padding: 8px 12px; border-radius: 6px; font-size: 14px;
+            cursor: pointer; display: flex; align-items: center; gap: 6px;
+        }
+        #back-btn:hover { background: rgba(255, 255, 255, 0.1); }
+        #back-btn:active { transform: scale(0.95); }
+
+        /* Bottom-Left: Brand */
+        #brand {
+            bottom: 30px; left: 30px; font-size: 18px; font-weight: bold; opacity: 0.5; 
+            cursor: pointer; display: flex; align-items: center; gap: 8px;
+            border: none; background: transparent; padding: 0; box-shadow: none; 
+            backdrop-filter: none; -webkit-backdrop-filter: none;
+        }
+        #brand:hover { opacity: 1.0; }
+
+        /* Error/Fallback Message */
+        #error-msg {
+            top: 20px; left: 50%; transform: translateX(-50%); padding: 12px 20px; border-radius: 8px;
+            background: rgba(200, 50, 50, 0.8); display: none; font-size: 14px; white-space: nowrap;
+        }
+
+        /* Bottom-Right: Upload Button */
+        #upload-btn-container {
+            bottom: 30px; right: 30px; 
+            border: none; background: transparent; padding: 0; box-shadow: none; 
+            backdrop-filter: none; -webkit-backdrop-filter: none;
+        }
+        #upload-btn {
+            padding: 10px 16px; border-radius: 8px; font-size: 14px;
+            cursor: pointer; display: flex; align-items: center; gap: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff; border: 1px solid rgba(255, 255, 255, 0.2);
+            transition: background 0.3s, transform 0.3s;
+            backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+        }
+        #upload-btn:hover { background: rgba(255, 255, 255, 0.2); }
+        #upload-btn:active { transform: scale(0.95); }
+        #file-input { display: none; }
+
+        /* Media Overlay & Carousel */
+        #map-location-hint {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            padding: 16px 32px;
+            background: rgba(0, 0, 0, 0.4);
+            backdrop-filter: blur(15px);
+            -webkit-backdrop-filter: blur(15px);
+            border-radius: 16px;
+            border: 1px solid rgba(255,255,255,0.2);
+            color: #fff;
+            font-size: 24px;
+            font-weight: bold;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 50;
+        }
+        #map-location-hint.show { opacity: 1; }
+
+        #media-overlay {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80%; max-width: 800px;
+            aspect-ratio: 16/9;
+            border-radius: 16px;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(10, 10, 10, 0.4);
+            backdrop-filter: blur(25px);
+            -webkit-backdrop-filter: blur(25px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 30px 60px rgba(0,0,0,0.6);
+            z-index: 100;
+            opacity: 0;
+            transition: opacity 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        #media-overlay.show {
+            opacity: 1;
+        }
+
+        #main-media {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            border-radius: 16px;
+            background: #000;
+        }
+
+        #carousel-container {
+            position: absolute;
+            bottom: 20px;
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            width: 100%;
+            z-index: 101;
+            padding: 0 20px;
+            box-sizing: border-box;
+            overflow-x: auto;
+            -ms-overflow-style: none; scrollbar-width: none;
+        }
+        #carousel-container::-webkit-scrollbar { display: none; }
+
+        .carousel-item {
+            width: 80px;
+            height: 50px;
+            border-radius: 8px;
+            object-fit: cover;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), 
+                        border 0.3s, opacity 0.3s;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            opacity: 0.6;
+            flex-shrink: 0;
+            animation: slideUpFade 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+            transform: translateY(40px);
+            opacity: 0;
+        }
+        @keyframes slideUpFade {
+            0% { transform: translateY(40px); opacity: 0; }
+            100% { transform: translateY(0); opacity: 0.6; }
+        }
+        .carousel-item:hover {
+            opacity: 0.9;
+        }
+        .carousel-item.active {
+            transform: scale(1.15) translateY(-5px);
+            opacity: 1;
+            border: 2px solid #fff;
+            animation: none;
+        }
+
+        /* PIP Window */
+        #pip {
+            top: 20px; right: 20px; width: 240px; aspect-ratio: 4/3; border-radius: 12px;
+            display: flex; flex-direction: column; overflow: hidden; cursor: grab;
+        }
+        #pip:active { cursor: grabbing; }
+        
+        #pip-header {
+            width: 100%; height: 26px; background: rgba(255,255,255,0.08); display: flex;
+            align-items: center; justify-content: flex-end; padding: 0 12px; cursor: inherit;
+        }
+        
+        #status-dot { width: 6px; height: 6px; border-radius: 50%; background: #ff4444; transition: background 0.3s;}
+
+        #video-container { flex: 1; position: relative; width: 100%; background: #000; overflow: hidden; }
+        
+        /* Mirrored Video */
+        #camera-video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+
+        /* PIP Folded State */
+        #pip.folded { 
+            width: 44px; height: 44px; aspect-ratio: auto; border-radius: 22px; 
+            padding: 0; justify-content: center; align-items: center; cursor: pointer;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+        #pip.folded #pip-header, #pip.folded #video-container { display: none; }
+        #pip-camera-icon { display: none; font-size: 20px;}
+        #pip.folded #pip-camera-icon { display: block; }
+        #pip.folded #status-dot { display: none; }
+    </style>
+    
+    <!-- Three.js & Controls -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <!-- Loading Mask -->
+    <div id="loading">正在连接星际信号...<br><span style="font-size: 14px; opacity: 0.7; margin-top: 8px;">(等待模型与资源加载)</span></div>
+
+    <!-- WebGL Canvas Anchor -->
+    <div id="canvas-container"></div>
+
+    <!-- UI Overlay -->
+    <div id="version-badge" class="glass">Being的地球相册 v7.5</div>
+    
+    <div id="back-btn" class="glass" onclick="console.log('触发路由：返回上一页')">
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+        返回相册
+    </div>
+
+    <div id="brand" class="glass">
+        <!-- SVG Vector Bird Logo Placeholder -->
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m20.9 8.9-8.4 5.3a2 2 0 0 1-2.1 0L2 8.9a2 2 0 0 1 0-3.8l8.4-5.3a2 2 0 0 1 2.1 0l8.5 5.3a2 2 0 0 1-.1 3.8Z"/><path d="m2 15 8.9 5.6a2 2 0 0 0 2.2 0L22 15"/></svg>
+        Being
+    </div>
+
+    <div id="error-msg" class="glass">手势控制已禁用：请允许浏览器访问摄像头。当前已降级为鼠标触控模式。</div>
+
+    <!-- Photo Upload -->
+    <div id="upload-btn-container" class="glass">
+        <label id="upload-btn">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            上传照片文件夹
+            <input type="file" id="file-input" multiple webkitdirectory directory accept="image/*,video/*">
+        </label>
+    </div>
+
+    <!-- Map Location Hint -->
+    <div id="map-location-hint">🌍 寻找到: 未知地点</div>
+
+    <!-- Media Overlay Album -->
+    <div id="media-overlay">
+        <video id="main-video" autoplay loop muted playsinline style="display: none; width: 100%; height: 100%; object-fit: contain; border-radius: 16px;"></video>
+        <img id="main-media" src="" />
+        <div id="album-location" style="color: #fff; font-size: 16px; opacity: 0.9; letter-spacing: 1px; position: absolute; bottom: 85px; left: 50%; transform: translateX(-50%); font-weight: bold; text-shadow: 0 2px 4px rgba(0,0,0,0.8); z-index: 102;">📍 未知地点</div>
+        <div id="carousel-container"></div>
+    </div>
+
+    <!-- PIP Window -->
+    <div id="pip" class="glass">
+        <div id="pip-header">
+            <div id="status-dot"></div>
+        </div>
+        <div id="video-container">
+            <video id="camera-video" autoplay playsinline></video>
+        </div>
+        <div id="pip-camera-icon">📷</div>
+    </div>
+
+    <script>
+        // ==========================================
+        // 1. UI Interaction & PIP Dragging Logic
+        // ==========================================
+        const pip = document.getElementById('pip');
+        const pipHeader = document.getElementById('pip-header');
+        
+        let isDragging = false;
+        let dragOffsetX = 0, dragOffsetY = 0;
+
+        // Double click to fold/unfold
+        pip.addEventListener('dblclick', () => {
+            pip.classList.toggle('folded');
+        });
+
+        // Mouse drag logic for PIP window
+        pipHeader.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            dragOffsetX = e.clientX - pip.offsetLeft;
+            dragOffsetY = e.clientY - pip.offsetTop;
+            e.preventDefault(); // Prevent text selection
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (isDragging && !pip.classList.contains('folded')) {
+                pip.style.left = (e.clientX - dragOffsetX) + 'px';
+                pip.style.top = (e.clientY - dragOffsetY) + 'px';
+                pip.style.right = 'auto'; // release pure right binding on drag
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            isDragging = false;
+        });
+
+        // ==========================================
+        // 2. Three.js Scene Setup & Assets
+        // ==========================================
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        
+        // Setup Camera
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.z = 5;
+
+        // Setup Renderer
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(renderer.domElement);
+
+        // Setup Controls (Default Mouse Drag)
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.autoRotate = true;
+        controls.autoRotateSpeed = 0.5;
+        controls.enablePan = false;
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0x333333); // Dim ambient
+        scene.add(ambientLight);
+
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2);
+        directionalLight.position.set(5, 3, 5); // Sharp terminator 
+        scene.add(directionalLight);
+
+        // Assets Loader
+        const textureLoader = new THREE.TextureLoader();
+        textureLoader.crossOrigin = 'anonymous'; // Essential for external CDN images
+        
+        // Track async loading
+        let loadedStats = 0;
+        const totalAssets = 4; // 3 textures + 1 MediaPipe init
+        const tryHideLoading = () => {
+            loadedStats++;
+            if (loadedStats >= totalAssets) hideLoadingScreen();
+        };
+
+        function hideLoadingScreen() {
+            const loading = document.getElementById('loading');
+            loading.style.opacity = 0;
+            setTimeout(() => { loading.style.display = 'none'; }, 800);
+        }
+
+        // Earth Materials and Mesh
+        const earthGroup = new THREE.Group(); // We group to manage hand-driven local rotation vs camera orbit
+        earthGroup.rotation.order = 'YXZ'; // Important for Lat/Lon mapping
+        scene.add(earthGroup);
+
+        const earthMap = textureLoader.load('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg', tryHideLoading);
+        const bumpMap = textureLoader.load('https://unpkg.com/three-globe/example/img/earth-topology.png', tryHideLoading);
+        const cloudMap = textureLoader.load('https://raw.githubusercontent.com/mrdoob/three.js/master/examples/textures/planets/earth_clouds_1024.png', tryHideLoading);
+
+        const earthGeom = new THREE.SphereGeometry(1.5, 64, 64);
+        const earthMat = new THREE.MeshPhongMaterial({
+            map: earthMap,
+            bumpMap: bumpMap,
+            bumpScale: 0.03,
+            specular: new THREE.Color(0x333333),
+            shininess: 15
+        });
+        const earthMesh = new THREE.Mesh(earthGeom, earthMat);
+        earthGroup.add(earthMesh);
+
+        // Photo Album Logic
+        const locationsData = [];
+        let currentLocationIndex = -1;
+        let currentPhotoIndex = 0;
+        let isAlbumOpen = false;
+        let isAutoMovingToLocation = false;
+        
+        let hintTimeout;
+        function showHint() {
+            const hint = document.getElementById('map-location-hint');
+            hint.classList.add('show');
+            clearTimeout(hintTimeout);
+            hintTimeout = setTimeout(() => {
+                hint.classList.remove('show');
+            }, 2000);
+        }
+
+        const markersGroup = new THREE.Group();
+        earthGroup.add(markersGroup);
+
+        function addMarkerToEarth(locData) {
+            const radius = 1.5;
+            const rotX = (locData.lat * Math.PI) / 180;
+            const rotY = (-locData.lon * Math.PI) / 180 - Math.PI / 2;
+            const eulerOrig = new THREE.Euler(rotX, rotY, 0, 'YXZ');
+            const m = new THREE.Matrix4().makeRotationFromEuler(eulerOrig);
+            const mInv = new THREE.Matrix4().copy(m).invert();
+            const pos = new THREE.Vector3(0, 0, radius).applyMatrix4(mInv);
+            
+            const geom = new THREE.SphereGeometry(0.02, 16, 16);
+            const mat = new THREE.MeshBasicMaterial({ color: 0x00ffcc });
+            const pin = new THREE.Mesh(geom, mat);
+            pin.position.copy(pos);
+            markersGroup.add(pin);
+
+            const canvas = document.createElement('canvas');
+            canvas.width = 160;
+            canvas.height = 40;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.roundRect(0, 0, canvas.width, canvas.height, 12);
+            ctx.fill();
+            ctx.font = '20px sans-serif';
+            ctx.fillStyle = '#00ffcc';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(locData.name, 80, 20);
+
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.minFilter = THREE.LinearFilter;
+            const spriteMat = new THREE.SpriteMaterial({ map: texture, depthTest: true }); 
+            const sprite = new THREE.Sprite(spriteMat);
+            sprite.scale.set(0.4, 0.1, 1);
+            sprite.position.copy(pos).multiplyScalar(1.05);
+            markersGroup.add(sprite);
+        }
+
+        const geocodeCache = {};
+        async function getCoordinates(placeName) {
+            if (geocodeCache[placeName]) return geocodeCache[placeName];
+            try {
+                const response = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(placeName)}&format=json&limit=1`);
+                const data = await response.json();
+                if (data && data.length > 0) {
+                    const coords = { lat: parseFloat(data[0].lat), lon: parseFloat(data[0].lon) };
+                    geocodeCache[placeName] = coords;
+                    return coords;
+                }
+            } catch (e) {
+                console.error('Geocoding failed for', placeName, e);
+            }
+            return null;
+        }
+
+        async function rotateToCoordinates(lat, lon) {
+            const radius = Math.max(1.5, camera.position.length());
+            camera.position.set(0, 0, radius);
+            controls.update();
+
+            targetRotX = (lat * Math.PI) / 180;
+            // Common offset for ThreeGlobe texture mapping
+            targetRotY = (-lon * Math.PI) / 180 - Math.PI / 2;
+            
+            isAutoMovingToLocation = true;
+            controls.autoRotate = false;
+        }
+
+        const fileInput = document.getElementById('file-input');
+        fileInput.addEventListener('change', async (e) => {
+            const files = e.target.files;
+            if (!files || files.length === 0) return;
+
+            const validFiles = Array.from(files).filter(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
+            
+            const tempGroups = {};
+            for (let file of validFiles) {
+                const parts = file.webkitRelativePath ? file.webkitRelativePath.split('/') : [];
+                const folderName = parts.length > 1 ? parts[parts.length - 2] : "未知地点";
+                if (!tempGroups[folderName]) tempGroups[folderName] = [];
+                tempGroups[folderName].push(file);
+            }
+
+            for (let folderName in tempGroups) {
+                let locData = locationsData.find(l => l.name === folderName);
+                if (!locData) {
+                    let lat = 0, lon = 0;
+                    if (folderName !== "未知地点") {
+                        const coords = await getCoordinates(folderName);
+                        if (coords) { lat = coords.lat; lon = coords.lon; }
+                    }
+                    locData = { name: folderName, lat, lon, photos: [] };
+                    addMarkerToEarth(locData);
+                    locationsData.push(locData);
+                }
+                
+                for (let file of tempGroups[folderName]) {
+                    locData.photos.push({
+                        url: URL.createObjectURL(file),
+                        type: file.type
+                    });
+                }
+            }
+            
+            if (locationsData.length > 0 && currentLocationIndex === -1) {
+                currentLocationIndex = 0;
+                rotateToCoordinates(locationsData[0].lat, locationsData[0].lon);
+                document.getElementById('map-location-hint').innerText = `🌍 寻找到: ${locationsData[0].name}`;
+                showHint();
+            }
+            e.target.value = '';
+        });
+
+        async function setMainMedia(photoIndex) {
+            const locData = locationsData[currentLocationIndex];
+            if (!locData) return;
+            if (photoIndex < 0 || photoIndex >= locData.photos.length) return;
+            
+            const media = locData.photos[photoIndex];
+            const imgEl = document.getElementById('main-media');
+            const vidEl = document.getElementById('main-video');
+            
+            if (media.type.startsWith('video/')) {
+                imgEl.style.display = 'none';
+                vidEl.style.display = 'block';
+                vidEl.src = media.url;
+            } else {
+                vidEl.style.display = 'none';
+                imgEl.style.display = 'block';
+                imgEl.src = media.url;
+            }
+        }
+
+        function openAlbumForLocation(index) {
+            currentLocationIndex = index;
+            const locData = locationsData[index];
+            if (!locData || locData.photos.length === 0) return;
+            
+            // Auto move to this location just in case
+            rotateToCoordinates(locData.lat, locData.lon);
+
+            // Display overlay
+            currentPhotoIndex = 0;
+            const overlay = document.getElementById('media-overlay');
+            overlay.style.display = 'flex';
+            void overlay.offsetWidth;
+            overlay.classList.add('show');
+            isAlbumOpen = true;
+            
+            document.getElementById('album-location').innerText = `📍 ${locData.name}`;
+
+            updateCarousel();
+            setMainMedia(0);
+        }
+
+        function closeAlbum() {
+            const overlay = document.getElementById('media-overlay');
+            overlay.classList.remove('show');
+            setTimeout(() => {
+                if(!isAlbumOpen) overlay.style.display = 'none';
+            }, 500);
+            isAlbumOpen = false;
+        }
+
+        function toggleAlbum() {
+            if (isAlbumOpen) closeAlbum();
+            else openAlbum();
+        }
+
+        function updateCarousel() {
+            const container = document.getElementById('carousel-container');
+            container.innerHTML = '';
+            const locData = locationsData[currentLocationIndex];
+            if (!locData) return;
+
+            locData.photos.forEach((media, index) => {
+                let el;
+                if (media.type.startsWith('video/')) {
+                    el = document.createElement('video');
+                    el.src = media.url;
+                } else {
+                    el = document.createElement('img');
+                    el.src = media.url;
+                }
+                
+                el.className = 'carousel-item' + (index === currentPhotoIndex ? ' active' : '');
+                el.style.animationDelay = `${index * 0.08}s`;
+                
+                el.onclick = () => {
+                    currentPhotoIndex = index;
+                    setMainMedia(index);
+                    updateCarouselHighlight();
+                };
+                container.appendChild(el);
+            });
+        }
+
+        function updateCarouselHighlight() {
+            const container = document.getElementById('carousel-container');
+            Array.from(container.children).forEach((child, i) => {
+                if (i === currentPhotoIndex) {
+                    child.classList.add('active');
+                    child.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+                } else {
+                    child.classList.remove('active');
+                }
+            });
+        }
+
+        function nextPhoto() {
+            const locData = locationsData[currentLocationIndex];
+            if (!locData || locData.photos.length <= 1) return;
+            currentPhotoIndex = (currentPhotoIndex + 1) % locData.photos.length;
+            setMainMedia(currentPhotoIndex);
+            updateCarouselHighlight();
+        }
+
+        function prevPhoto() {
+            const locData = locationsData[currentLocationIndex];
+            if (!locData || locData.photos.length <= 1) return;
+            currentPhotoIndex = (currentPhotoIndex - 1 + locData.photos.length) % locData.photos.length;
+            setMainMedia(currentPhotoIndex);
+            updateCarouselHighlight();
+        }
+
+        function nextLocation() {
+            if (locationsData.length <= 1) return;
+            currentLocationIndex = (currentLocationIndex + 1) % locationsData.length;
+            const loc = locationsData[currentLocationIndex];
+            rotateToCoordinates(loc.lat, loc.lon);
+            document.getElementById('map-location-hint').innerText = `🌍 下一站: ${loc.name}`;
+            showHint();
+        }
+
+        function prevLocation() {
+            if (locationsData.length <= 1) return;
+            currentLocationIndex = (currentLocationIndex - 1 + locationsData.length) % locationsData.length;
+            const loc = locationsData[currentLocationIndex];
+            rotateToCoordinates(loc.lat, loc.lon);
+            document.getElementById('map-location-hint').innerText = `🌍 上一站: ${loc.name}`;
+            showHint();
+        }
+
+        // Cloud Materials and Mesh
+        const cloudGeom = new THREE.SphereGeometry(1.52, 64, 64);
+        const cloudMat = new THREE.MeshLambertMaterial({
+            map: cloudMap,
+            transparent: true,
+            opacity: 0.4,
+            blending: THREE.AdditiveBlending,
+            side: THREE.DoubleSide
+        });
+        const cloudMesh = new THREE.Mesh(cloudGeom, cloudMat);
+        earthGroup.add(cloudMesh);
+
+        // Generate particle stars
+        const starGeom = new THREE.BufferGeometry();
+        const starMat = new THREE.PointsMaterial({color: 0xffffff, size: 0.03, transparent: true, opacity: 0.8});
+        const starVertices = [];
+        for(let i = 0; i < 2000; i++){
+            const x = (Math.random() - 0.5) * 60;
+            const y = (Math.random() - 0.5) * 60;
+            const z = (Math.random() - 0.5) * 60;
+            // Prevent spawning inside the view center
+            if (Math.abs(x) > 3 || Math.abs(y) > 3 || Math.abs(z) > 3) {
+                starVertices.push(x, y, z);
+            }
+        }
+        starGeom.setAttribute('position', new THREE.Float32BufferAttribute(starVertices, 3));
+        const stars = new THREE.Points(starGeom, starMat);
+        scene.add(stars);
+
+        // Handle Window Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // ==========================================
+        // 3. Math & State Variables for Hand Control
+        // ==========================================
+        let isHandDetected = false;
+        let lastHandDetectTime = 0;
+        let lastPinchTime = 0;
+        let lastSpreadTime = 0;
+        let lastSwipeTime = 0;
+
+        let currentRotX = 0, currentRotY = 0;
+        let targetRotX = 0, targetRotY = 0;
+        let lastHandCenterX = null, lastHandCenterY = null;
+
+        let currentCameraZ = 5;
+        let targetCameraZ = 5;
+
+        // Linear interpolation for smoothing motion
+        const lerp = (start, end, factor) => (1 - factor) * start + factor * end;
+
+        // ==========================================
+        // 4. MediaPipe Computer Vision Integration
+        // ==========================================
+        const videoElement = document.getElementById('camera-video');
+        const statusDot = document.getElementById('status-dot');
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 1,           // Single hand control for MVP
+            modelComplexity: 1,       // Balance between speed and accuracy
+            minDetectionConfidence: 0.65,
+            minTrackingConfidence: 0.65
+        });
+
+        hands.onResults((results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                // Hand Detected! Takeover mode.
+                isHandDetected = true;
+                lastHandDetectTime = Date.now();
+                controls.enabled = false;    // Disable mouse orbit
+                controls.autoRotate = false; // Disable auto rotation
+                statusDot.style.background = '#00ffcc'; // Green Dot
+
+                const landmarks = results.multiHandLandmarks[0];
+                const indexTip = landmarks[8];
+                const thumbTip = landmarks[4];
+                const palmCenter = landmarks[9]; // Middle finger MCP
+                const now = Date.now();
+
+                // --- 4.1 Rotation & Swipe Mapping ---
+                if (lastHandCenterX !== null && lastHandCenterY !== null) {
+                    let dx = palmCenter.x - lastHandCenterX; 
+                    let dy = palmCenter.y - lastHandCenterY;
+                    
+                    if (now - lastSwipeTime > 600) { // 600ms swipe cooldown
+                        if (dx < -0.04) { // Swift left swipe -> Next
+                            if (isAlbumOpen) nextPhoto();
+                            else nextLocation();
+                            lastSwipeTime = now;
+                        } else if (dx > 0.04) { // Swift right swipe -> Prev
+                            if (isAlbumOpen) prevPhoto();
+                            else prevLocation();
+                            lastSwipeTime = now;
+                        } else if (!isAlbumOpen && !isAutoMovingToLocation) {
+                            // Slow drag -> Map Rotation
+                            targetRotY += dx * 3.5;
+                            targetRotX += dy * 3.5;
+                            targetRotX = Math.max(-Math.PI/2.5, Math.min(Math.PI/2.5, targetRotX));
+                        }
+                    }
+                }
+                lastHandCenterX = palmCenter.x;
+                lastHandCenterY = palmCenter.y;
+
+                // --- 4.2 Pinch & Spread Mapping ---
+                const dist = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
+                
+                if (dist < 0.045 && now - lastPinchTime > 1200) { // Pinch -> Close Album / Zoom Out
+                    if (isAlbumOpen) {
+                        closeAlbum();
+                    } else {
+                        targetCameraZ = Math.min(8.0, targetCameraZ + 0.5);
+                    }
+                    lastPinchTime = now;
+                }
+                
+                if (dist > 0.14 && now - lastSpreadTime > 1200) { // Spread -> Open Album
+                    if (!isAlbumOpen && locationsData.length > 0 && currentLocationIndex !== -1) {
+                        openAlbumForLocation(currentLocationIndex);
+                    }
+                    lastSpreadTime = now;
+                }
+
+            } else {
+                // Hands lost in this frame
+                lastHandCenterX = null;
+                lastHandCenterY = null;
+            }
+        });
+
+        // Initialize WebRTC Camera
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 320,
+            height: 240
+        });
+
+        cameraUtils.start().then(() => {
+            tryHideLoading(); // Camera started successfully
+        }).catch((err) => {
+            console.error('Camera Access Denied:', err);
+            // Setup Fallback
+            document.getElementById('error-msg').style.display = 'block';
+            pip.style.display = 'none';
+            tryHideLoading(); // Proceed anyway via mouse controls
+        });
+
+        // ==========================================
+        // 5. Main Render & Animation Loop
+        // ==========================================
+        const clock = new THREE.Clock();
+
+        const animate = function () {
+            requestAnimationFrame(animate);
+            const timeDelta = clock.getDelta();
+            const time = clock.getElapsedTime();
+
+            // Check State Machine: Release gesture if nothing detected for 2+ seconds
+            if (isHandDetected && (Date.now() - lastHandDetectTime > 2000)) {
+                isHandDetected = false;
+                controls.enabled = true;
+                controls.autoRotate = true;
+                statusDot.style.background = '#ff4444'; // Red Dot
+                lastHandCenterX = null;
+                lastHandCenterY = null;
+
+                // Synchronize raw geometry angles to Orbit target so it doesn't snap
+                targetRotX = earthGroup.rotation.x;
+                targetRotY = earthGroup.rotation.y;
+            }
+
+            if (isHandDetected || isAutoMovingToLocation) {
+                // Apply Lerp for ultra-smooth Gestural UX
+                currentRotX = lerp(currentRotX, targetRotX, 0.1);
+                currentRotY = lerp(currentRotY, targetRotY, 0.1);
+                currentCameraZ = lerp(currentCameraZ, targetCameraZ, 0.1);
+
+                earthGroup.rotation.x = currentRotX;
+                earthGroup.rotation.y = currentRotY;
+                camera.position.z = currentCameraZ;
+                
+                if (isAutoMovingToLocation && Math.abs(currentRotX - targetRotX) < 0.005 && Math.abs(currentRotY - targetRotY) < 0.005) {
+                    isAutoMovingToLocation = false;
+                }
+            } else {
+                // OrbitControls takes over smoothly
+                controls.update(); 
+                cloudMesh.rotation.y -= 0.0005; // Slow independent cloud movement
+                
+                // Keep states synchronized for when hand interrupts again
+                targetCameraZ = camera.position.z;
+                currentCameraZ = camera.position.z;
+                // Since orbit controls rotate the camera around the world, the earthGroup local rotation remains static.
+                // We keep them locked.
+                targetRotX = earthGroup.rotation.x;
+                targetRotY = earthGroup.rotation.y;
+                currentRotX = earthGroup.rotation.x;
+                currentRotY = earthGroup.rotation.y;
+            }
+
+            renderer.render(scene, camera);
+        };
+
+        animate();
+
+    </script>
+</body>
+</html>
