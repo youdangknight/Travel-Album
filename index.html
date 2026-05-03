@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
@@ -274,7 +274,7 @@
             <div id="status-dot"></div>
         </div>
         <div id="video-container">
-            <video id="camera-video" autoplay playsinline></video>
+            <video id="camera-video" autoplay muted playsinline></video>
         </div>
         <div id="pip-camera-icon">📷</div>
     </div>
@@ -472,49 +472,195 @@
         }
 
         const fileInput = document.getElementById('file-input');
-        fileInput.addEventListener('change', async (e) => {
-            const files = e.target.files;
-            if (!files || files.length === 0) return;
+        const DB_NAME = 'travel-album-history';
+        const DB_VERSION = 1;
+        const STORE_NAME = 'media';
 
-            const validFiles = Array.from(files).filter(f => f.type.startsWith('image/') || f.type.startsWith('video/'));
-            
-            const tempGroups = {};
-            for (let file of validFiles) {
-                const parts = file.webkitRelativePath ? file.webkitRelativePath.split('/') : [];
-                const folderName = parts.length > 1 ? parts[parts.length - 2] : "未知地点";
-                if (!tempGroups[folderName]) tempGroups[folderName] = [];
-                tempGroups[folderName].push(file);
-            }
-
-            for (let folderName in tempGroups) {
-                let locData = locationsData.find(l => l.name === folderName);
-                if (!locData) {
-                    let lat = 0, lon = 0;
-                    if (folderName !== "未知地点") {
-                        const coords = await getCoordinates(folderName);
-                        if (coords) { lat = coords.lat; lon = coords.lon; }
+        function openAlbumDb() {
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(DB_NAME, DB_VERSION);
+                request.onupgradeneeded = () => {
+                    const db = request.result;
+                    if (!db.objectStoreNames.contains(STORE_NAME)) {
+                        db.createObjectStore(STORE_NAME, { keyPath: 'id' });
                     }
-                    locData = { name: folderName, lat, lon, photos: [] };
-                    addMarkerToEarth(locData);
-                    locationsData.push(locData);
-                }
-                
-                for (let file of tempGroups[folderName]) {
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        }
+
+        async function withMediaStore(mode, callback) {
+            const db = await openAlbumDb();
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(STORE_NAME, mode);
+                const store = transaction.objectStore(STORE_NAME);
+                const result = callback(store);
+                transaction.oncomplete = () => resolve(result);
+                transaction.onerror = () => reject(transaction.error);
+                transaction.onabort = () => reject(transaction.error);
+            });
+        }
+
+        async function saveMediaRecord(locationName, mediaFile) {
+            const file = mediaFile.file;
+            const path = mediaFile.path || file.webkitRelativePath || file.name;
+            const id = `${locationName}/${path}/${file.lastModified}/${file.size}`;
+            await withMediaStore('readwrite', (store) => {
+                store.put({
+                    id,
+                    locationName,
+                    name: file.name,
+                    path,
+                    type: file.type,
+                    lastModified: file.lastModified,
+                    blob: file
+                });
+            });
+        }
+
+        async function getSavedMediaRecords() {
+            return withMediaStore('readonly', (store) => {
+                const request = store.getAll();
+                return new Promise((resolve, reject) => {
+                    request.onsuccess = () => resolve(request.result || []);
+                    request.onerror = () => reject(request.error);
+                });
+            });
+        }
+
+        async function getOrCreateLocation(folderName) {
+            let locData = locationsData.find(l => l.name === folderName);
+            if (locData) return locData;
+
+            let lat = 0, lon = 0;
+            if (folderName !== "鏈煡鍦扮偣") {
+                const coords = await getCoordinates(folderName);
+                if (coords) { lat = coords.lat; lon = coords.lon; }
+            }
+            locData = { name: folderName, lat, lon, photos: [] };
+            addMarkerToEarth(locData);
+            locationsData.push(locData);
+            return locData;
+        }
+
+        function getFolderNameFromPath(path) {
+            const parts = path ? path.split('/').filter(Boolean) : [];
+            return parts.length > 1 ? parts[parts.length - 2] : "鏈煡鍦扮偣";
+        }
+
+        async function addMediaFiles(mediaFiles, options = { persist: true }) {
+            const validFiles = mediaFiles.filter(({file}) => file && (file.type.startsWith('image/') || file.type.startsWith('video/')));
+            const tempGroups = {};
+
+            for (const mediaFile of validFiles) {
+                const folderName = getFolderNameFromPath(mediaFile.path || mediaFile.file.webkitRelativePath || mediaFile.file.name);
+                if (!tempGroups[folderName]) tempGroups[folderName] = [];
+                tempGroups[folderName].push(mediaFile);
+            }
+
+            for (const folderName in tempGroups) {
+                const locData = await getOrCreateLocation(folderName);
+                for (const mediaFile of tempGroups[folderName]) {
                     locData.photos.push({
-                        url: URL.createObjectURL(file),
-                        type: file.type
+                        url: URL.createObjectURL(mediaFile.file),
+                        type: mediaFile.file.type,
+                        name: mediaFile.file.name
                     });
+                    if (options.persist) {
+                        await saveMediaRecord(folderName, mediaFile);
+                    }
                 }
             }
-            
+
             if (locationsData.length > 0 && currentLocationIndex === -1) {
                 currentLocationIndex = 0;
                 rotateToCoordinates(locationsData[0].lat, locationsData[0].lon);
-                document.getElementById('map-location-hint').innerText = `🌍 寻找到: ${locationsData[0].name}`;
+                document.getElementById('map-location-hint').innerText = `馃實 鎵惧埌: ${locationsData[0].name}`;
                 showHint();
             }
+        }
+
+        async function loadSavedMediaHistory() {
+            try {
+                const records = await getSavedMediaRecords();
+                const mediaFiles = records.map(record => ({
+                    file: new File([record.blob], record.name, {
+                        type: record.type,
+                        lastModified: record.lastModified
+                    }),
+                    path: record.path || `${record.locationName}/${record.name}`
+                }));
+                await addMediaFiles(mediaFiles, { persist: false });
+            } catch (err) {
+                console.error('Failed to restore saved media history:', err);
+            }
+        }
+
+        fileInput.addEventListener('change', async (e) => {
+            const files = Array.from(e.target.files || []).map(file => ({
+                file,
+                path: file.webkitRelativePath || file.name
+            }));
+            await addMediaFiles(files, { persist: true });
             e.target.value = '';
         });
+
+        function readFileEntry(entry, pathPrefix = '') {
+            return new Promise((resolve, reject) => {
+                entry.file((file) => resolve({ file, path: `${pathPrefix}${file.name}` }), reject);
+            });
+        }
+
+        function readDirectoryEntries(reader) {
+            return new Promise((resolve, reject) => {
+                const entries = [];
+                const readBatch = () => {
+                    reader.readEntries((batch) => {
+                        if (!batch.length) {
+                            resolve(entries);
+                            return;
+                        }
+                        entries.push(...batch);
+                        readBatch();
+                    }, reject);
+                };
+                readBatch();
+            });
+        }
+
+        async function collectEntryFiles(entry, pathPrefix = '') {
+            if (entry.isFile) {
+                return [await readFileEntry(entry, pathPrefix)];
+            }
+            if (!entry.isDirectory) return [];
+
+            const reader = entry.createReader();
+            const entries = await readDirectoryEntries(reader);
+            const nextPrefix = `${pathPrefix}${entry.name}/`;
+            const nested = await Promise.all(entries.map(child => collectEntryFiles(child, nextPrefix)));
+            return nested.flat();
+        }
+
+        async function collectDroppedMediaFiles(dataTransferItems) {
+            const entries = Array.from(dataTransferItems || [])
+                .map(item => item.webkitGetAsEntry ? item.webkitGetAsEntry() : null)
+                .filter(Boolean);
+            const nested = await Promise.all(entries.map(entry => collectEntryFiles(entry)));
+            return nested.flat();
+        }
+
+        window.addEventListener('dragover', (event) => {
+            event.preventDefault();
+        });
+
+        window.addEventListener('drop', async (event) => {
+            event.preventDefault();
+            const mediaFiles = await collectDroppedMediaFiles(event.dataTransfer.items);
+            await addMediaFiles(mediaFiles, { persist: true });
+        });
+
+        loadSavedMediaHistory();
 
         async function setMainMedia(photoIndex) {
             const locData = locationsData[currentLocationIndex];
@@ -864,3 +1010,5 @@
     </script>
 </body>
 </html>
+
+
